@@ -1,0 +1,12 @@
+{
+  "identifier": "default",
+  "description": "Default capability set for Local Git Stat main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-set-focus"
+  ]
+}

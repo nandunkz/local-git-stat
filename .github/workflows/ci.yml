@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ── Format & Lint ────────────────────────────────────────────────────────────
+  check:
+    name: Format & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain (with fmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ── Unit Tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Tests (${{ matrix.os }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install git (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y git
+
+      - name: Run unit tests
+        run: cargo test --all-targets
+
+  # ── Security Audit ───────────────────────────────────────────────────────────
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies for known vulnerabilities
+        run: cargo audit
+
+  # ── Dependency Review (PRs only) ─────────────────────────────────────────────
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  # ── Cross-platform Release Bundles (push only) ─────────────────────────────
+  package:
+    name: Package (${{ matrix.os }})
+    if: github.event_name == 'push'
+    needs: [check, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies for Tauri bundling
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
+
+      - name: Build release bundles
+        run: cargo tauri build --verbose
+
+      - name: Upload Linux bundles
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-git-stat-linux-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            target/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.deb
+
+      - name: Upload macOS bundles
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-git-stat-macos-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            target/release/bundle/**/*.dmg
+            target/release/bundle/**/*.app.tar.gz
+
+      - name: Upload Windows bundles
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-git-stat-windows-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.msi
+
+  # ── Publish GitHub Release (push only) ────────────────────────────────────
+  publish-release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: local-git-stat-*-${{ github.sha }}
+          merge-multiple: true
+          path: release-assets
+
+      - name: Compute release metadata
+        id: metadata
+        run: |
+          sanitized_ref="${GITHUB_REF_NAME//\//-}"
+          echo "tag=auto-${sanitized_ref}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "name=Automated build ${GITHUB_RUN_NUMBER} (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          name: ${{ steps.metadata.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            release-assets/**/*.AppImage
+            release-assets/**/*.deb
+            release-assets/**/*.dmg
+            release-assets/**/*.app.tar.gz
+            release-assets/**/*.exe
+            release-assets/**/*.msi
