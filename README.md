@@ -1,3 +1,5 @@
+![Screenshot](images/Screenshot.png)
+
 # Local Git Stat
 
 Local Git Stat is a desktop app that scans your local Git repositories and turns raw commit history
